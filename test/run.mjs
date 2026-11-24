@@ -155,6 +155,33 @@ async function unitTests() {
   } finally {
     await new Promise((resolve) => authServer.close(resolve))
   }
+  const tui = (await import("../src/tui.js")).default
+  const events = []
+  let layer
+  tui.setup({
+    client: { rpc: () => ({ refresh: async () => ({ providers: 1, models: 7, errors: 0 }) }) },
+    data: {
+      location: {
+        default: () => ({ directory: "/tmp/test" }),
+        model: {
+          invalidate: async () => events.push("invalidate"),
+          sync: async () => events.push("sync"),
+        },
+      },
+    },
+    keymap: { layer: (factory) => { layer = factory() } },
+    ui: { toast: { show: (toast) => events.push(toast) } },
+  })
+  assert.equal(layer.mode, "global")
+  const command = layer.commands.find((entry) => entry.id === "autodiscovery.discover")
+  assert.equal(command.bind, "ctrl+d")
+  await command.run()
+  assert.deepEqual(events, ["invalidate", "sync", {
+    title: "Autodiscovery",
+    message: "7 model(s) up to date",
+    variant: "success",
+  }])
+
   console.log("unit checks passed")
 }
 
