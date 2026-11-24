@@ -102,11 +102,11 @@ Plugin options are also accepted as an override:
 
 The background server does **not** call the endpoint at startup: it only restores the last cached inventory.
 
-- **TUI**: opening the UI calls the server RPC, re-syncs the model list and shows a toast with the result (model count and any provider failures). Press `CTRL-D` (**Discover models**, also in the command palette) anywhere, including the `/models` list, to refresh again; the same toast confirms the result. The command id `autodiscovery.discover` can be rebound in your keybinds.
+- **TUI**: opening the UI calls the server RPC, re-syncs the model list and shows a toast with the result (model count and any provider failures). Run **Discover models** from the command palette to refresh again; the same toast confirms the result. The command id `autodiscovery.discover` has no default keybinding and can be bound in your keybinds if you want one.
 - **Desktop GUI**: a window calls the same RPC when it opens and shows a toast with the result.
 - **API**: `POST /api/rpc/autodiscovery/refresh` with body `{"input":{}}`.
 
-The `autodiscovery.tui` entry in the plugin list is this package's TUI part, which owns that keybind; it is not a second installation. Config changes reapply cached models with the new filters, but do not trigger a network fetch.
+The `autodiscovery.tui` entry in the plugin list is this package's TUI part, which owns the palette command; it is not a second installation. Config changes reapply cached models with the new filters, but do not trigger a network fetch.
 
 ## How discovery works
 

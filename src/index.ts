@@ -13,7 +13,7 @@ import {
 } from "./discovery.ts"
 import { matchesFilters } from "./glob.ts"
 import { Autodiscovery } from "./rpc.ts"
-import type { DiscoveryResult, ProviderResult } from "./toast.ts"
+import { errorDetail, type DiscoveryResult, type ProviderResult } from "./toast.ts"
 
 interface ProviderRecordView {
   provider: ProviderInfo
@@ -239,10 +239,21 @@ export default {
     const refresh = () => {
       if (refreshing) return refreshing
       refreshing = (async () => {
-        await syncStates()
         let models = 0
         let errors = 0
         const results: ProviderResult[] = []
+        try {
+          await syncStates()
+        } catch (error) {
+          const detail = errorDetail(error)
+          console.warn(`[autodiscovery] config sync failed: ${detail}`)
+          return {
+            providers: states.size,
+            models,
+            errors: 1,
+            results: [{ providerID: "autodiscovery", models: 0, error: `config sync failed: ${detail}` }],
+          }
+        }
         for (const state of states.values()) {
           const debug = state.options.debug === true
           try {
@@ -270,12 +281,21 @@ export default {
             log(debug, `${state.providerID}: discovered ${state.models.length} model(s) from ${inventory.endpoint}`)
           } catch (error) {
             errors++
-            state.error = error instanceof Error ? error.message : String(error)
+            state.error = errorDetail(error)
             results.push({ providerID: state.providerID, models: state.models.length, error: state.error })
             console.warn(`[autodiscovery] ${state.providerID}: discovery failed: ${state.error}`)
           }
         }
-        await ctx.provider.reload()
+        // Keep the RPC resolved even if OpenCode's own reload throws a plain
+        // object: a rejected RPC reaches the UI as "[object Object]".
+        try {
+          await ctx.provider.reload()
+        } catch (error) {
+          const detail = errorDetail(error)
+          errors++
+          results.push({ providerID: "autodiscovery", models: 0, error: `reload failed: ${detail}` })
+          console.warn(`[autodiscovery] reload failed: ${detail}`)
+        }
         return { providers: states.size, models, errors, results }
       })().finally(() => {
         refreshing = undefined

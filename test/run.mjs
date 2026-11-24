@@ -155,7 +155,7 @@ async function unitTests() {
   } finally {
     await new Promise((resolve) => authServer.close(resolve))
   }
-  const { resultMessage, errorMessage } = await import("../src/toast.ts")
+  const { resultMessage, errorMessage, errorDetail } = await import("../src/toast.ts")
   assert.equal(resultMessage({
     providers: 2,
     models: 16,
@@ -170,6 +170,11 @@ async function unitTests() {
   }), "testgw: 7 models loaded (offline)")
   assert.equal(resultMessage({ providers: 0, models: 0, errors: 0, results: [] }), "")
   assert.equal(errorMessage(new Error("offline")), "Discovery failed: offline")
+  assert.equal(errorMessage({ message: "server down" }), "Discovery failed: server down")
+  assert.equal(errorMessage({ data: { message: "rpc unavailable" } }), "Discovery failed: rpc unavailable")
+  assert.equal(errorMessage({ code: "ECONNREFUSED" }), 'Discovery failed: {"code":"ECONNREFUSED"}')
+  assert.equal(errorDetail("plain string"), "plain string")
+  assert.equal(errorDetail(Object.assign(new Error("fetch failed"), { cause: new Error("connect ECONNREFUSED") })), "fetch failed: connect ECONNREFUSED")
 
   const tui = (await import("../src/tui.js")).default
   const events = []
@@ -199,7 +204,8 @@ async function unitTests() {
   assert.equal(layer.mode, "global")
   events.length = 0
   const command = layer.commands.find((entry) => entry.id === "autodiscovery.discover")
-  assert.equal(command.bind, "ctrl+d")
+  assert.equal(command.bind, undefined, "no default keybinding for the discover command")
+  assert.equal(command.palette, true)
   await command.run()
   assert.deepEqual(events, ["invalidate", "sync", success])
 

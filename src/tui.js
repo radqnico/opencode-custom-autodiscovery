@@ -1,4 +1,4 @@
-// TUI part: refresh autodiscovered models when the UI opens and on CTRL-D.
+// TUI part: refresh autodiscovered models when the UI opens (and on demand via the palette command).
 import { Autodiscovery } from "./rpc.ts"
 import { errorMessage, resultMessage } from "./toast.ts"
 
@@ -35,7 +35,6 @@ export default {
           title: "Discover models",
           description: "Refresh autodiscovered models for this location",
           group: "Autodiscovery",
-          bind: "ctrl+d",
           palette: true,
           run: () => discover(),
         },
