@@ -123,6 +123,26 @@ async function credentialCandidates(
   return secrets
 }
 
+/** Same catalog name for several gateway aliases? Add a segment from each ID so the UI can tell them apart. */
+function disambiguateNames(models: ModelInfo[]): void {
+  const groups = new Map<string, ModelInfo[]>()
+  for (const model of models) {
+    const group = groups.get(model.name) ?? []
+    group.push(model)
+    groups.set(model.name, group)
+  }
+  for (const group of groups.values()) {
+    if (group.length < 2) continue
+    for (const model of group) {
+      const others = group.filter((other) => other !== model)
+      const segments = model.id.split("/").slice(0, -1)
+      const distinct = segments.find((segment) => others.every((other) => !other.id.split("/").includes(segment)))
+      const suffix = distinct ?? (others.every((other) => other.id.split("/").length > segments.length) ? "short" : undefined)
+      if (suffix && !model.name.endsWith(`(${suffix})`)) model.name = `${model.name} (${suffix})`
+    }
+  }
+}
+
 async function cachedModels(ctx: PluginContext, providerID: string): Promise<ModelInfo[] | undefined> {
   try {
     const value = await ctx.storage?.get(`autodiscovery:${providerID}`)
@@ -239,6 +259,7 @@ export default {
               state.config.models?.[entry.id],
               previous.get(entry.id),
             ))
+            disambiguateNames(state.models)
             state.endpoint = inventory.endpoint
             state.error = undefined
             models += state.models.length

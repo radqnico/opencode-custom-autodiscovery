@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises"
 
 import { parseJsonc, loadProviderOptions } from "../src/config.ts"
 import { globToRegExp, matchesFilters } from "../src/glob.ts"
-import { buildCatalogIndex, buildModelInfo, extractMetadata, fetchInventory } from "../src/discovery.ts"
+import { buildCatalogIndex, buildModelInfo, collapseEffortVariants, extractMetadata, fetchInventory } from "../src/discovery.ts"
 
 const models = [
   {
@@ -26,6 +26,8 @@ const models = [
     supported_features: ["tools"],
     variants: [{ id: "fast", settings: { reasoningEffort: "low" } }],
   },
+  { id: "auto-coder-minimal" },
+  { id: "auto-coder-xhigh" },
   { id: "other-model" },
   {
     id: "claude-sonnet-5-5",
@@ -54,6 +56,21 @@ async function unitTests() {
   assert.equal(matchesFilters("auto-coder", ["*command-code*", "auto*"]), true)
   assert.equal(matchesFilters("auto-coder", ["*", "!auto*"]), false)
   assert.equal(matchesFilters("anything", []), true)
+
+  const grouped = [
+    { id: "base", raw: {} },
+    { id: "base-low", raw: {} },
+    { id: "base-high", raw: {} },
+    { id: "solo-max", raw: {} },
+  ]
+  assert.deepEqual(collapseEffortVariants(grouped).map((model) => model.id), ["base", "solo-max"])
+  assert.deepEqual(grouped[0].raw.variants.map((variant) => variant.id), ["low", "high"])
+  const standard = [
+    { id: "std", raw: { variants: [{ id: "high", settings: { reasoningEffort: "high" } }] } },
+    { id: "std-high", raw: {} },
+  ]
+  assert.deepEqual(collapseEffortVariants(standard).map((model) => model.id), ["std"])
+  assert.deepEqual(standard[0].raw.variants.map((variant) => variant.id), ["high"])
 
   const catalog = buildCatalogIndex([{
     provider: { id: "anthropic", name: "Anthropic", activation: "auto", package: "x" },
@@ -257,7 +274,7 @@ async function integrationTest() {
     assert.equal(auto.limit.output, 32000)
     assert.equal(auto.capabilities.tools, true)
     assert.deepEqual(auto.capabilities.input, ["text", "image"])
-    assert.deepEqual(auto.variants.map((variant) => variant.id), ["low", "high"])
+    assert.deepEqual(auto.variants.map((variant) => variant.id).sort(), ["high", "low", "minimal", "xhigh"])
     const command = first.find((model) => model.id === "cmd/command-code-large")
     assert.equal(command.limit.context, 65536)
     assert.deepEqual(command.variants.map((variant) => variant.id), ["fast"])

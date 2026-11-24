@@ -170,6 +170,40 @@ function parseInventory(payload: unknown): RawModel[] {
   return models
 }
 
+const EFFORT_SUFFIXES = ["minimal", "low", "medium", "high", "xhigh", "max", "none"] as const
+const VARIANT_PATTERN = new RegExp(`^(.*)-(${EFFORT_SUFFIXES.join("|")})$`, "i")
+
+function hasStandardVariants(models: readonly RawModel[]): boolean {
+  return models.some((model) => arr(model.raw.variants).length > 0 || arr(model.raw.reasoning_options).length > 0)
+}
+
+/**
+ * Adapt to the provider's variant format: when the inventory already declares
+ * variants (`variants` / `reasoning_options`), suffixed IDs are treated as aliases
+ * of those variants; otherwise suffixed IDs define the variants themselves.
+ * A suffixed entry is folded only when its base model is also present.
+ */
+export function collapseEffortVariants(models: readonly RawModel[]): RawModel[] {
+  const standard = hasStandardVariants(models)
+  const byID = new Map(models.map((model) => [model.id.toLowerCase(), model]))
+  const result: RawModel[] = []
+  for (const model of models) {
+    const match = model.id.match(VARIANT_PATTERN)
+    const base = match ? byID.get(match[1]!.toLowerCase()) : undefined
+    if (base && base !== model) {
+      const variantID = match![2]!.toLowerCase()
+      const variants = arr(base.raw.variants).map((value) => obj(value))
+      if (!standard || !variants.some((variant) => variant.id === variantID)) {
+        variants.push({ id: variantID, settings: { reasoningEffort: variantID } })
+      }
+      base.raw.variants = variants
+      continue
+    }
+    result.push(model)
+  }
+  return result
+}
+
 function url(base: string, suffix: string): string {
   if (/^https?:\/\//i.test(suffix)) return suffix
   return `${base.replace(/\/+$/, "")}/${suffix.replace(/^\/+/, "")}`
@@ -251,7 +285,8 @@ export async function fetchInventory(
           failures.push(`${new URL(endpoint).pathname}:${response.status}/credential-${index + 1}`)
           continue
         }
-        const models = parseInventory(await response.json())
+        const inventory = parseInventory(await response.json())
+        const models = collapseEffortVariants(inventory)
         if (debug) console.log(`[autodiscovery] ${provider.id}: ${models.length} models from ${endpoint} using credential ${index + 1}`)
         if (models.length > 0) return { models, endpoint }
         if (options.modelsPath || (options.extraPaths?.length ?? 0) > 0) return { models, endpoint }
