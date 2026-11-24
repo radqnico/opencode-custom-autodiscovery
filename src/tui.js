@@ -1,24 +1,26 @@
-// TUI part: adds CTRL-D "Discover models" to refresh the autodiscovered inventory live.
+// TUI part: refresh autodiscovered models when the UI opens and on CTRL-D.
 import { Autodiscovery } from "./rpc.ts"
+import { errorMessage, resultMessage } from "./toast.ts"
 
 export default {
   id: "autodiscovery.tui",
-  setup(context) {
+  async setup(context) {
     const discover = async () => {
       try {
+        // Read context.client here: it changes when the server restarts.
         const result = await context.client.rpc(Autodiscovery).refresh({})
         const location = context.location ?? context.data.location.default()
         await context.data.location.model.invalidate(location)
         await context.data.location.model.sync(location)
         context.ui.toast.show({
           title: "Autodiscovery",
-          message: `${result.models} model(s) up to date`,
+          message: resultMessage(result),
           variant: result.errors > 0 ? "warning" : "success",
         })
       } catch (error) {
         context.ui.toast.show({
           title: "Autodiscovery",
-          message: `Discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+          message: errorMessage(error),
           variant: "error",
         })
       }
@@ -39,5 +41,7 @@ export default {
         },
       ],
     }))
+
+    await discover()
   },
 }

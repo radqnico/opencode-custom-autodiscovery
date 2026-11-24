@@ -155,11 +155,17 @@ async function unitTests() {
   } finally {
     await new Promise((resolve) => authServer.close(resolve))
   }
+  const { resultMessage, errorMessage } = await import("../src/toast.ts")
+  assert.equal(resultMessage({ providers: 2, models: 7, errors: 0 }), "7 model(s) up to date")
+  assert.equal(resultMessage({ providers: 2, models: 7, errors: 1 }), "7 model(s) up to date, 1 provider(s) failed")
+  assert.equal(errorMessage(new Error("offline")), "Discovery failed: offline")
+
   const tui = (await import("../src/tui.js")).default
   const events = []
   let layer
-  tui.setup({
-    client: { rpc: () => ({ refresh: async () => ({ providers: 1, models: 7, errors: 0 }) }) },
+  let refreshResult = { providers: 1, models: 7, errors: 0 }
+  const tuiContext = {
+    client: { rpc: () => ({ refresh: async () => refreshResult }) },
     data: {
       location: {
         default: () => ({ directory: "/tmp/test" }),
@@ -171,15 +177,54 @@ async function unitTests() {
     },
     keymap: { layer: (factory) => { layer = factory() } },
     ui: { toast: { show: (toast) => events.push(toast) } },
-  })
-  assert.equal(layer.mode, "global")
-  const command = layer.commands.find((entry) => entry.id === "autodiscovery.discover")
-  assert.equal(command.bind, "ctrl+d")
-  await command.run()
-  assert.deepEqual(events, ["invalidate", "sync", {
+  }
+  const success = {
     title: "Autodiscovery",
     message: "7 model(s) up to date",
     variant: "success",
+  }
+  await tui.setup(tuiContext)
+  assert.deepEqual(events, ["invalidate", "sync", success], "TUI open refreshes and toasts the result")
+  assert.equal(layer.mode, "global")
+  events.length = 0
+  const command = layer.commands.find((entry) => entry.id === "autodiscovery.discover")
+  assert.equal(command.bind, "ctrl+d")
+  await command.run()
+  assert.deepEqual(events, ["invalidate", "sync", success])
+
+  refreshResult = { providers: 2, models: 3, errors: 1 }
+  events.length = 0
+  await command.run()
+  assert.deepEqual(events, ["invalidate", "sync", {
+    title: "Autodiscovery",
+    message: "3 model(s) up to date, 1 provider(s) failed",
+    variant: "warning",
+  }])
+
+  const gui = (await import("../src/gui.js")).default
+  const guiEvents = []
+  let guiRefresh = async () => ({ providers: 1, models: 5, errors: 0 })
+  const guiContext = {
+    client: { rpc: () => ({ refresh: (...args) => guiRefresh(...args) }) },
+    toast: { show: (toast) => guiEvents.push(toast) },
+  }
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+  gui.setup(guiContext)
+  await flush()
+  assert.deepEqual(guiEvents, [{
+    title: "Autodiscovery",
+    description: "5 model(s) up to date",
+    variant: "success",
+  }], "GUI open refreshes and toasts the result")
+
+  guiEvents.length = 0
+  guiRefresh = async () => { throw new Error("server down") }
+  gui.setup(guiContext)
+  await flush()
+  assert.deepEqual(guiEvents, [{
+    title: "Autodiscovery",
+    description: "Discovery failed: server down",
+    variant: "error",
   }])
 
   console.log("unit checks passed")
