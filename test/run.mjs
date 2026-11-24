@@ -156,6 +156,7 @@ async function unitTests() {
     await new Promise((resolve) => authServer.close(resolve))
   }
   const { resultMessage, errorMessage, errorDetail } = await import("../src/toast.ts")
+  const { describeFailure } = await import("../src/errors.ts")
   assert.equal(resultMessage({
     providers: 2,
     models: 16,
@@ -175,6 +176,26 @@ async function unitTests() {
   assert.equal(errorMessage({ code: "ECONNREFUSED" }), 'Discovery failed: {"code":"ECONNREFUSED"}')
   assert.equal(errorDetail("plain string"), "plain string")
   assert.equal(errorDetail(Object.assign(new Error("fetch failed"), { cause: new Error("connect ECONNREFUSED") })), "fetch failed: connect ECONNREFUSED")
+  // Any entity, any nature: primitives, empty values, exotic objects, cycles.
+  assert.equal(errorDetail(null), "unknown error")
+  assert.equal(errorDetail(undefined), "unknown error")
+  assert.equal(errorDetail(""), "empty error message")
+  assert.equal(errorDetail("   "), "empty error message")
+  assert.equal(errorDetail(42), "42")
+  assert.equal(errorDetail(true), "true")
+  assert.equal(errorDetail(10n), "10")
+  assert.equal(errorDetail(Symbol("boom")), "Symbol(boom)")
+  assert.equal(errorDetail(function explode() {}), "function explode")
+  assert.equal(errorDetail(new Error()), "Error")
+  assert.equal(errorDetail({ error: { reason: "nested failure" } }), "nested failure")
+  assert.equal(errorDetail([{ message: "first" }, { message: "second" }]), '[{"message":"first"},{"message":"second"}]')
+  const circular = { message: "outer" }
+  circular.self = circular
+  assert.equal(errorDetail(circular), "outer")
+  assert.equal(errorDetail(new Map([["key", "value"]])), "Map (no readable message)")
+  const throwing = Object.defineProperty({}, "message", { get() { throw new Error("getter failed") } })
+  assert.equal(errorDetail(throwing), "[unreadable error]")
+  assert.equal(describeFailure("provider testgw", { message: "offline" }), "provider testgw: offline")
 
   const tui = (await import("../src/tui.js")).default
   const events = []

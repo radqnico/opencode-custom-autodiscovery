@@ -13,7 +13,8 @@ import {
 } from "./discovery.ts"
 import { matchesFilters } from "./glob.ts"
 import { Autodiscovery } from "./rpc.ts"
-import { errorDetail, type DiscoveryResult, type ProviderResult } from "./toast.ts"
+import { describeFailure, errorDetail } from "./errors.ts"
+import type { DiscoveryResult, ProviderResult } from "./toast.ts"
 
 interface ProviderRecordView {
   provider: ProviderInfo
@@ -118,7 +119,7 @@ async function credentialCandidates(
         add(credentialSecret(await integration.connection.resolve(connection)))
       }
     } catch (error) {
-      console.warn(`[autodiscovery] ${state.providerID}: could not read saved credentials:`, error)
+      console.warn(describeFailure(`[autodiscovery] ${state.providerID}: could not read saved credentials`, error))
     }
   }
   return secrets
@@ -316,7 +317,7 @@ export default {
       try {
         watchers.push(watch(file, () => {
           if (watchDebounce) clearTimeout(watchDebounce)
-          watchDebounce = setTimeout(() => void reapply().catch((error) => console.warn("[autodiscovery] config reload failed:", error)), 250)
+          watchDebounce = setTimeout(() => void reapply().catch((error) => console.warn(describeFailure("[autodiscovery] config reload failed", error))), 250)
         }))
       } catch {
         // Not all platforms can watch individual files.
@@ -336,7 +337,7 @@ export default {
             if (event.type === "config.updated") await reapply()
           }
         } catch (error) {
-          if (!controller.signal.aborted) console.warn("[autodiscovery] event subscription failed:", error)
+          if (!controller.signal.aborted) console.warn(describeFailure("[autodiscovery] event subscription failed", error))
         }
       })()
       cleanup.push(() => controller.abort())

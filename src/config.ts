@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 
+import { errorDetail } from "./errors.ts"
+
 export interface AutodiscoveryOptions {
   enabled?: boolean
   filters?: readonly string[]
@@ -188,7 +190,7 @@ function loadDocuments(ctx: { location?: { directory?: string; project?: { canon
     try {
       documents.push({ path: "<OPENCODE_CONFIG_CONTENT>", info: record(parseJsonc(inline)) })
     } catch (error) {
-      console.warn("[autodiscovery] invalid OPENCODE_CONFIG_CONTENT:", error)
+      console.warn(`[autodiscovery] invalid OPENCODE_CONFIG_CONTENT: ${errorDetail(error)}`)
     }
   }
   const seen = new Set<string>()
@@ -198,7 +200,7 @@ function loadDocuments(ctx: { location?: { directory?: string; project?: { canon
     try {
       documents.push({ path: file, info: record(parseJsonc(readFileSync(file, "utf8"))) })
     } catch (error) {
-      console.warn(`[autodiscovery] could not parse ${file}:`, error)
+      console.warn(`[autodiscovery] could not parse ${file}: ${errorDetail(error)}`)
     }
   }
   return documents

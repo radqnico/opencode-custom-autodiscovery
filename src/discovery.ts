@@ -1,4 +1,5 @@
 import type { AutodiscoveryOptions, ProviderConfig } from "./config.ts"
+import { describeFailure, errorDetail } from "./errors.ts"
 
 export interface ModelInfo {
   id: string
@@ -209,6 +210,15 @@ function url(base: string, suffix: string): string {
   return `${base.replace(/\/+$/, "")}/${suffix.replace(/^\/+/, "")}`
 }
 
+/** A malformed endpoint must not mask the original fetch error. */
+function endpointLabel(endpoint: string): string {
+  try {
+    return new URL(endpoint).pathname
+  } catch {
+    return endpoint
+  }
+}
+
 function candidates(baseURL: string, options: AutodiscoveryOptions): string[] {
   const base = baseURL.replace(/\/+$/, "").replace(/\/models$/, "")
   const paths: string[] = []
@@ -267,7 +277,9 @@ export async function fetchInventory(
 ): Promise<DiscoverySource> {
   const baseURL = options.baseURL
     ?? pick({ ...config.settings, ...obj(provider.settings) }, ["baseURL", "base_url", "url"])
-  if (typeof baseURL !== "string" || baseURL.length === 0) throw new Error("provider has no baseURL")
+  if (typeof baseURL !== "string" || baseURL.length === 0) {
+    throw new Error(`${provider.id}: no baseURL configured for discovery`)
+  }
   const secrets: (string | undefined)[] = [...new Set<string | undefined>([...credentials, ...configuredSecrets(provider, config)])]
   if (secrets.length === 0) secrets.push(undefined)
   const timeout = options.timeoutMs ?? 10_000
@@ -282,7 +294,7 @@ export async function fetchInventory(
           signal: AbortSignal.timeout(timeout),
         })
         if (!response.ok) {
-          failures.push(`${new URL(endpoint).pathname}:${response.status}/credential-${index + 1}`)
+          failures.push(`${endpointLabel(endpoint)}: HTTP ${response.status} (credential ${index + 1})`)
           continue
         }
         const inventory = parseInventory(await response.json())
@@ -292,13 +304,14 @@ export async function fetchInventory(
         if (options.modelsPath || (options.extraPaths?.length ?? 0) > 0) return { models, endpoint }
         empty ??= { models, endpoint }
       } catch (error) {
-        failures.push(`${new URL(endpoint).pathname}:error/credential-${index + 1}`)
-        if (debug) console.warn(`[autodiscovery] ${provider.id}: ${endpoint} failed with credential ${index + 1}:`, error)
+        failures.push(`${endpointLabel(endpoint)}: ${errorDetail(error)} (credential ${index + 1})`)
+        if (debug) console.warn(describeFailure(`[autodiscovery] ${provider.id}: ${endpoint} with credential ${index + 1}`, error))
       }
     }
   }
   if (empty) return empty
-  throw new Error(`no model inventory from ${baseURL} (${failures.slice(-12).join(", ")})`)
+  const reason = failures.length > 0 ? ` (${failures.slice(-12).join("; ")})` : ""
+  throw new Error(`${provider.id}: no model inventory from ${baseURL}${reason}`)
 }
 
 function media(value: unknown, fallback: string[]): string[] {
