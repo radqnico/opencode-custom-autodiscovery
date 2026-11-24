@@ -156,14 +156,25 @@ async function unitTests() {
     await new Promise((resolve) => authServer.close(resolve))
   }
   const { resultMessage, errorMessage } = await import("../src/toast.ts")
-  assert.equal(resultMessage({ providers: 2, models: 7, errors: 0 }), "7 model(s) up to date")
-  assert.equal(resultMessage({ providers: 2, models: 7, errors: 1 }), "7 model(s) up to date, 1 provider(s) failed")
+  assert.equal(resultMessage({
+    providers: 2,
+    models: 16,
+    errors: 0,
+    results: [{ providerID: "testgw", models: 7 }, { providerID: "local", models: 9 }],
+  }), "testgw: 7 models loaded\nlocal: 9 models loaded")
+  assert.equal(resultMessage({
+    providers: 1,
+    models: 7,
+    errors: 1,
+    results: [{ providerID: "testgw", models: 7, error: "offline" }],
+  }), "testgw: 7 models loaded (offline)")
+  assert.equal(resultMessage({ providers: 0, models: 0, errors: 0, results: [] }), "")
   assert.equal(errorMessage(new Error("offline")), "Discovery failed: offline")
 
   const tui = (await import("../src/tui.js")).default
   const events = []
   let layer
-  let refreshResult = { providers: 1, models: 7, errors: 0 }
+  let refreshResult = { providers: 1, models: 7, errors: 0, results: [{ providerID: "testgw", models: 7 }] }
   const tuiContext = {
     client: { rpc: () => ({ refresh: async () => refreshResult }) },
     data: {
@@ -180,7 +191,7 @@ async function unitTests() {
   }
   const success = {
     title: "Autodiscovery",
-    message: "7 model(s) up to date",
+    message: "testgw: 7 models loaded",
     variant: "success",
   }
   await tui.setup(tuiContext)
@@ -192,18 +203,18 @@ async function unitTests() {
   await command.run()
   assert.deepEqual(events, ["invalidate", "sync", success])
 
-  refreshResult = { providers: 2, models: 3, errors: 1 }
+  refreshResult = { providers: 1, models: 3, errors: 1, results: [{ providerID: "testgw", models: 3, error: "offline" }] }
   events.length = 0
   await command.run()
   assert.deepEqual(events, ["invalidate", "sync", {
     title: "Autodiscovery",
-    message: "3 model(s) up to date, 1 provider(s) failed",
+    message: "testgw: 3 models loaded (offline)",
     variant: "warning",
   }])
 
   const gui = (await import("../src/gui.js")).default
   const guiEvents = []
-  let guiRefresh = async () => ({ providers: 1, models: 5, errors: 0 })
+  let guiRefresh = async () => ({ providers: 1, models: 5, errors: 0, results: [{ providerID: "testgw", models: 5 }] })
   const guiContext = {
     client: { rpc: () => ({ refresh: (...args) => guiRefresh(...args) }) },
     toast: { show: (toast) => guiEvents.push(toast) },
@@ -213,7 +224,7 @@ async function unitTests() {
   await flush()
   assert.deepEqual(guiEvents, [{
     title: "Autodiscovery",
-    description: "5 model(s) up to date",
+    description: "testgw: 5 models loaded",
     variant: "success",
   }], "GUI open refreshes and toasts the result")
 

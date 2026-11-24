@@ -13,6 +13,7 @@ import {
 } from "./discovery.ts"
 import { matchesFilters } from "./glob.ts"
 import { Autodiscovery } from "./rpc.ts"
+import type { DiscoveryResult, ProviderResult } from "./toast.ts"
 
 interface ProviderRecordView {
   provider: ProviderInfo
@@ -51,7 +52,7 @@ interface PluginContext {
   rpc?: {
     register(
       definition: typeof Autodiscovery,
-      handlers: { refresh(): Promise<{ providers: number; models: number; errors: number }> },
+      handlers: { refresh(): Promise<DiscoveryResult> },
     ): Promise<{ dispose(): Promise<void> }>
   }
   event?: {
@@ -234,13 +235,14 @@ export default {
       await ctx.provider.reload()
     }
 
-    let refreshing: Promise<{ providers: number; models: number; errors: number }> | undefined
+    let refreshing: Promise<DiscoveryResult> | undefined
     const refresh = () => {
       if (refreshing) return refreshing
       refreshing = (async () => {
         await syncStates()
         let models = 0
         let errors = 0
+        const results: ProviderResult[] = []
         for (const state of states.values()) {
           const debug = state.options.debug === true
           try {
@@ -263,16 +265,18 @@ export default {
             state.endpoint = inventory.endpoint
             state.error = undefined
             models += state.models.length
+            results.push({ providerID: state.providerID, models: state.models.length })
             await saveModels(ctx, state.providerID, state.models)
             log(debug, `${state.providerID}: discovered ${state.models.length} model(s) from ${inventory.endpoint}`)
           } catch (error) {
             errors++
             state.error = error instanceof Error ? error.message : String(error)
+            results.push({ providerID: state.providerID, models: state.models.length, error: state.error })
             console.warn(`[autodiscovery] ${state.providerID}: discovery failed: ${state.error}`)
           }
         }
         await ctx.provider.reload()
-        return { providers: states.size, models, errors }
+        return { providers: states.size, models, errors, results }
       })().finally(() => {
         refreshing = undefined
       })

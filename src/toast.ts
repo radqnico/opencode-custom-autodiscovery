@@ -1,14 +1,22 @@
 /** Toast copy shared by the TUI and GUI parts. */
 
+export interface ProviderResult {
+  providerID: string
+  models: number
+  error?: string
+}
+
 export interface DiscoveryResult {
   providers: number
   models: number
   errors: number
+  results: readonly ProviderResult[]
 }
 
 export function resultMessage(result: DiscoveryResult): string {
-  const summary = `${result.models} model(s) up to date`
-  return result.errors > 0 ? `${summary}, ${result.errors} provider(s) failed` : summary
+  return result.results.map((entry) =>
+    `${entry.providerID}: ${entry.models} models loaded${entry.error ? ` (${entry.error})` : ""}`,
+  ).join("\n")
 }
 
 export function errorMessage(error: unknown): string {

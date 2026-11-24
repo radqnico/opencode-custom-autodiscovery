@@ -14,8 +14,21 @@ export const Autodiscovery = {
           providers: { type: "number" },
           models: { type: "number" },
           errors: { type: "number" },
+          results: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                providerID: { type: "string" },
+                models: { type: "number" },
+                error: { type: "string" },
+              },
+              required: ["providerID", "models"],
+              additionalProperties: false,
+            },
+          },
         },
-        required: ["providers", "models", "errors"],
+        required: ["providers", "models", "errors", "results"],
         additionalProperties: false,
       },
     },
