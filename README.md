@@ -93,19 +93,22 @@ Plugin options are also accepted as an override:
 | `baseURL` | provider `settings.baseURL` | Alternative endpoint for discovery only. |
 | `headers` | provider headers | Extra headers for the discovery request. |
 | `timeoutMs` | `10000` | Per-request timeout. |
-| `refreshIntervalMs` | `300000` | Background refresh interval. |
 | `catalog` | `true` | Use OpenCode's built-in model catalog to fill in missing metadata. |
 | `debug` | `false` | Log discovery details to the server log. |
 | `modelsPath` | auto | Override the discovery path (relative to `baseURL` or a full URL). |
 | `extraPaths` | none | Additional discovery paths tried after the standard ones. |
 
+## When discovery runs
+
+The background server does **not** call the endpoint at startup: it only restores the last cached inventory. The TUI (`./tui`) and OpenCode Desktop GUI (`./gui-experimental`) parts call the server RPC `autodiscovery.refresh` as soon as a UI opens, so models are fetched for the location you are actually using. You can call the same RPC manually with `POST /api/rpc/autodiscovery/refresh`. Config changes reapply the cached inventory with the new filters, but do not trigger a network fetch.
+
 ## How discovery works
 
-1. `GET {baseURL}/models` is tried first (plus `/v1/models`, `/api/tags` and `/api/v1/models` fallbacks). Standard OpenAI-compatible responses (`data[]`), Ollama/LM Studio responses (`models[]`) and plain string arrays are accepted. Provider API keys and headers are forwarded.
+1. `GET {baseURL}/models` is tried first (plus `/v1/models`, `/api/tags` and `/api/v1/models` fallbacks). Standard OpenAI-compatible responses (`data[]`), Ollama/LM Studio responses (`models[]`) and plain string arrays are accepted. Every available credential is tried in order — config `apiKey`, configured `env` variables, then all saved OpenCode credentials for that provider (active one first) — stopping at the first one that returns a model list. This also works when a provider is connected through `/connect` instead of declaring its key in the config.
 2. Each model ID is matched against OpenCode's built-in catalog by full ID and by its trailing segment, so gateway-prefixed IDs such as `cmd/claude-sonnet-5-5` inherit the catalog's limit, capabilities, cost and variants.
 3. Endpoint metadata (`context_length`, `max_model_len`, `tool_call`, `modalities`, `reasoning_options`, `variants`, etc.) overrides catalog values where present.
 4. Models declared explicitly in the provider's `models` map take precedence over both.
-5. The resulting inventory is registered with a provider transform. Providers with no usable models are added with `activation: "enabled"` so discovered models become selectable immediately. Refreshes run on config changes and in the background; the last successful inventory is cached and reused if an endpoint is temporarily unavailable.
+5. The resulting inventory is registered with a provider transform. Providers with no usable models are added with `activation: "enabled"` so discovered models become selectable immediately. The last successful inventory is cached and restored until the next UI-driven refresh.
 
 Filters apply only to autodiscovered models: models listed explicitly in the provider's `models` map are always kept, so hand-written entries never disappear because of a glob.
 

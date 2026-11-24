@@ -1,10 +1,13 @@
 {
   "name": "opencode-autodiscovery",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenCode v2 plugin: autodiscover models for custom-endpoint providers with context, capabilities and variants, plus glob filters.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./rpc": "./src/rpc.ts",
+    "./tui": "./src/tui.js",
+    "./gui-experimental": "./src/gui.js"
   },
   "files": [
     "src",

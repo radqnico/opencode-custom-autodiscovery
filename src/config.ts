@@ -8,7 +8,6 @@ export interface AutodiscoveryOptions {
   baseURL?: string
   headers?: Record<string, string>
   timeoutMs?: number
-  refreshIntervalMs?: number
   catalog?: boolean
   debug?: boolean
   modelsPath?: string
@@ -208,7 +207,7 @@ function loadDocuments(ctx: { location?: { directory?: string; project?: { canon
 function autodiscoveryFrom(value: unknown): AutodiscoveryOptions {
   const raw = record(value)
   const options: AutodiscoveryOptions = {}
-  for (const key of ["enabled", "filters", "baseURL", "headers", "timeoutMs", "refreshIntervalMs", "catalog", "debug", "modelsPath", "extraPaths"] as const) {
+  for (const key of ["enabled", "filters", "baseURL", "headers", "timeoutMs", "catalog", "debug", "modelsPath", "extraPaths"] as const) {
     if (raw[key] !== undefined) {
       ;(options as Record<string, unknown>)[key] = resolveDeep(raw[key])
     }

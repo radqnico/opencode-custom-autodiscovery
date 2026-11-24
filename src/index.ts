@@ -12,6 +12,7 @@ import {
   type ProviderInfo,
 } from "./discovery.ts"
 import { matchesFilters } from "./glob.ts"
+import { Autodiscovery } from "./rpc.ts"
 
 interface ProviderRecordView {
   provider: ProviderInfo
@@ -26,12 +27,32 @@ interface ProviderEditor {
   models: { set(providerID: string, models: readonly ModelInfo[]): void }
 }
 
+interface ConnectionInfo {
+  type: string
+  id: string
+  label?: string
+  method?: string
+}
+
 interface PluginContext {
   location?: { directory?: string; project?: { canonical?: string } }
   options?: unknown
   provider: {
     transform(callback: (editor: ProviderEditor) => void): Promise<{ dispose(): Promise<void> }>
     reload(): Promise<void>
+  }
+  integration?: {
+    get(input: { integrationID: string }): Promise<{ connections?: readonly ConnectionInfo[] }>
+    connection: {
+      active(integrationID: string): Promise<ConnectionInfo | undefined>
+      resolve(connection: ConnectionInfo): Promise<unknown>
+    }
+  }
+  rpc?: {
+    register(
+      definition: typeof Autodiscovery,
+      handlers: { refresh(): Promise<{ providers: number; models: number; errors: number }> },
+    ): Promise<{ dispose(): Promise<void> }>
   }
   event?: {
     subscribe(options?: { types?: string[]; signal?: AbortSignal }): AsyncIterable<{ type: string }>
@@ -52,10 +73,54 @@ interface State {
   error?: string
 }
 
-const DEFAULT_INTERVAL = 5 * 60 * 1000
-
 function log(debug: boolean, ...values: unknown[]): void {
   if (debug) console.log("[autodiscovery]", ...values)
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function credentialSecret(value: unknown): string | undefined {
+  const credential = asRecord(value)
+  if (credential.type === "key" && typeof credential.key === "string") return credential.key
+  if (credential.type === "oauth" && typeof credential.access === "string") return credential.access
+  if (typeof credential.token === "string") return credential.token
+  return undefined
+}
+
+/** Config keys, environment variables and every saved OpenCode credential for the provider. */
+async function credentialCandidates(
+  ctx: PluginContext,
+  state: State,
+): Promise<string[]> {
+  const secrets: string[] = []
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value.length > 0 && !secrets.includes(value)) secrets.push(value)
+  }
+  const settings = { ...state.config.settings, ...asRecord(state.info?.settings) }
+  add(settings.apiKey)
+  add(settings.api_key)
+  add(settings.token)
+  for (const name of state.config.env ?? state.info?.env ?? []) add(process.env[name])
+
+  const integrationID = state.info?.integrationID ?? state.providerID
+  const integration = ctx.integration
+  if (integration?.get && integration.connection?.resolve) {
+    try {
+      const active = await integration.connection.active(integrationID)
+      if (active) add(credentialSecret(await integration.connection.resolve(active)))
+      const info = await integration.get({ integrationID })
+      for (const connection of info.connections ?? []) {
+        add(credentialSecret(await integration.connection.resolve(connection)))
+      }
+    } catch (error) {
+      console.warn(`[autodiscovery] ${state.providerID}: could not read saved credentials:`, error)
+    }
+  }
+  return secrets
 }
 
 async function cachedModels(ctx: PluginContext, providerID: string): Promise<ModelInfo[] | undefined> {
@@ -144,15 +209,25 @@ export default {
       }
     })
 
-    let refreshing: Promise<void> | undefined
-    const refresh = (): Promise<void> => {
+    const reapply = async (): Promise<void> => {
+      await syncStates()
+      await ctx.provider.reload()
+    }
+
+    let refreshing: Promise<{ providers: number; models: number; errors: number }> | undefined
+    const refresh = () => {
       if (refreshing) return refreshing
       refreshing = (async () => {
         await syncStates()
+        let models = 0
+        let errors = 0
         for (const state of states.values()) {
           const debug = state.options.debug === true
           try {
-            const inventory = await fetchInventory(state.info ?? buildProviderInfo(state.providerID, state.config, state.options), state.config, state.options, debug)
+            const provider = state.info ?? buildProviderInfo(state.providerID, state.config, state.options)
+            const credentials = await credentialCandidates(ctx, state)
+            log(debug, `${state.providerID}: trying ${credentials.length} credential(s)`)
+            const inventory = await fetchInventory(provider, state.config, state.options, debug, credentials)
             const previous = new Map(state.models.map((model) => [model.id, model]))
             const activeCatalog: CatalogIndex = state.options.catalog === false
               ? { byID: new Map(), byTail: new Map() }
@@ -166,23 +241,29 @@ export default {
             ))
             state.endpoint = inventory.endpoint
             state.error = undefined
+            models += state.models.length
             await saveModels(ctx, state.providerID, state.models)
             log(debug, `${state.providerID}: discovered ${state.models.length} model(s) from ${inventory.endpoint}`)
           } catch (error) {
+            errors++
             state.error = error instanceof Error ? error.message : String(error)
             console.warn(`[autodiscovery] ${state.providerID}: discovery failed: ${state.error}`)
           }
         }
         await ctx.provider.reload()
+        return { providers: states.size, models, errors }
       })().finally(() => {
         refreshing = undefined
       })
       return refreshing
     }
 
-    await refresh()
-
     const cleanup: (() => void)[] = []
+    if (ctx.rpc?.register) {
+      const registration = await ctx.rpc.register(Autodiscovery, { refresh })
+      cleanup.push(() => void registration.dispose())
+    }
+
     const watchers: FSWatcher[] = []
     let watchDebounce: ReturnType<typeof setTimeout> | undefined
     for (const file of configFilePaths(ctx)) {
@@ -190,7 +271,7 @@ export default {
       try {
         watchers.push(watch(file, () => {
           if (watchDebounce) clearTimeout(watchDebounce)
-          watchDebounce = setTimeout(() => void refresh().catch((error) => console.warn("[autodiscovery] config refresh failed:", error)), 250)
+          watchDebounce = setTimeout(() => void reapply().catch((error) => console.warn("[autodiscovery] config reload failed:", error)), 250)
         }))
       } catch {
         // Not all platforms can watch individual files.
@@ -207,7 +288,7 @@ export default {
       void (async () => {
         try {
           for await (const event of eventContext.subscribe({ types: ["config.updated"], signal: controller.signal })) {
-            if (event.type === "config.updated") await refresh()
+            if (event.type === "config.updated") await reapply()
           }
         } catch (error) {
           if (!controller.signal.aborted) console.warn("[autodiscovery] event subscription failed:", error)
@@ -215,11 +296,6 @@ export default {
       })()
       cleanup.push(() => controller.abort())
     }
-
-    const intervals = [...states.values()].map((state) => state.options.refreshIntervalMs).filter((value): value is number => typeof value === "number" && value > 0)
-    const interval = intervals.length > 0 ? Math.min(...intervals) : DEFAULT_INTERVAL
-    const timer = setInterval(() => void refresh().catch((error) => console.warn("[autodiscovery] refresh failed:", error)), interval)
-    cleanup.push(() => clearInterval(timer))
 
     return () => cleanup.forEach((dispose) => dispose())
   },

@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises"
 
 import { parseJsonc, loadProviderOptions } from "../src/config.ts"
 import { globToRegExp, matchesFilters } from "../src/glob.ts"
-import { buildCatalogIndex, buildModelInfo, extractMetadata } from "../src/discovery.ts"
+import { buildCatalogIndex, buildModelInfo, extractMetadata, fetchInventory } from "../src/discovery.ts"
 
 const models = [
   {
@@ -33,7 +33,7 @@ const models = [
   },
 ]
 
-function unitTests() {
+async function unitTests() {
   assert.deepEqual(
     parseJsonc(`{
       // comment
@@ -115,6 +115,29 @@ function unitTests() {
   assert.deepEqual(loadProviderOptions({ location: { directory: root }, options: {} }).get("testgw")?.options.filters, ["nested*"])
   delete process.env.OPENCODE_CONFIG_CONTENT
 
+  const authServer = http.createServer((request, response) => {
+    if (request.url === "/v1/models" && request.headers.authorization === "Bearer good") {
+      response.setHeader("content-type", "application/json")
+      response.end(JSON.stringify({ data: [{ id: "gated-model" }] }))
+      return
+    }
+    response.statusCode = 401
+    response.end("{}")
+  })
+  const authPort = 49800 + Math.floor(Math.random() * 50)
+  await new Promise((resolve) => authServer.listen(authPort, "127.0.0.1", resolve))
+  try {
+    const inventory = await fetchInventory(
+      { id: "authgw", name: "Auth GW", activation: "enabled", package: "openai-compatible", settings: { baseURL: `http://127.0.0.1:${authPort}/v1` } },
+      {},
+      {},
+      false,
+      ["bad", "good"],
+    )
+    assert.deepEqual(inventory.models.map((model) => model.id), ["gated-model"])
+  } finally {
+    await new Promise((resolve) => authServer.close(resolve))
+  }
   console.log("unit checks passed")
 }
 
@@ -135,6 +158,7 @@ async function integrationTest() {
       testgw: {
         name: "Test Gateway",
         package: "@opencode/ai/providers/openai-compatible",
+        env: ["AD_BAD_KEY", "AD_GOOD_KEY"],
         settings: { baseURL: `http://127.0.0.1:${port}/v1` },
         autodiscovery: { enabled: true, filters },
         models: { "manual-keep": { name: "Manual Keep", limit: { context: 11111 } } },
@@ -142,9 +166,18 @@ async function integrationTest() {
     },
   }, null, 2))
 
+  process.env.AD_BAD_KEY = "bad"
+  process.env.AD_GOOD_KEY = "ad-good"
+  let authRequests = 0
   const mock = http.createServer((request, response) => {
     response.setHeader("content-type", "application/json")
     if (request.url === "/v1/models") {
+      authRequests++
+      if (request.headers.authorization !== "Bearer ad-good") {
+        response.statusCode = 401
+        response.end("{}")
+        return
+      }
       response.end(JSON.stringify({ object: "list", data: models }))
     } else {
       response.statusCode = 404
@@ -184,6 +217,28 @@ async function integrationTest() {
       return response.json()
     }
 
+    const rpc = async () => {
+      const response = await fetch(`${baseURL}/api/rpc/autodiscovery/refresh`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ input: {} }),
+      })
+      if (!response.ok) throw new Error(`RPC refresh: ${response.status} ${await response.text().catch(() => "")}\nserver output:\n${output}`)
+      return response.json()
+    }
+
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const plugins = await api("/api/plugin")
+      if (plugins.data.some((plugin) => plugin.id === "autodiscovery" && plugin.state.status === "active")) break
+      await delay(200)
+    }
+    const active = await api("/api/plugin")
+    assert.ok(active.data.some((plugin) => plugin.id === "autodiscovery" && plugin.state.status === "active"), `plugin did not load:\n${output}`)
+    assert.equal(authRequests, 0, "server startup must not call the endpoint")
+    await rpc()
+    assert.ok(authRequests > 0, "RPC refresh must call the endpoint")
+    console.log(`integration check 0 passed: no startup fetch, ${authRequests} request(s) after RPC`)
+
     const waitForModels = async (ids) => {
       for (let attempt = 0; attempt < 150; attempt++) {
         const result = await api("/api/model")
@@ -210,6 +265,7 @@ async function integrationTest() {
 
     writeConfig(["claude*"])
     await delay(1200)
+    await rpc()
     const second = await waitForModels(["claude-sonnet-5-5", "manual-keep"])
     const inherited = second.find((model) => model.id === "claude-sonnet-5-5")
     assert.equal(inherited.name, "Claude Sonnet 5.5")
@@ -223,6 +279,6 @@ async function integrationTest() {
   }
 }
 
-unitTests()
+await unitTests()
 await integrationTest()
 console.log("all checks passed")

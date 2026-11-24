@@ -190,25 +190,28 @@ function candidates(baseURL: string, options: AutodiscoveryOptions): string[] {
   return [...new Set(paths)]
 }
 
-function authHeaders(provider: ProviderInfo, config: ProviderConfig, options: AutodiscoveryOptions): Record<string, string> {
-  const settings = { ...config.settings, ...obj(provider.settings) }
-  const secret = pick(settings, ["apiKey", "api_key", "token"])
+function authHeaders(secret: string | undefined, provider: ProviderInfo, config: ProviderConfig, options: AutodiscoveryOptions): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...(config.headers ?? {}),
     ...(provider.headers ?? {}),
     ...(options.headers ?? {}),
   }
-  if (typeof secret === "string" && secret.length > 0 && !Object.keys(headers).some((key) => key.toLowerCase() === "authorization")) {
+  if (secret && !Object.keys(headers).some((key) => key.toLowerCase() === "authorization")) {
     headers.Authorization = `Bearer ${secret}`
   }
-  for (const name of config.env ?? provider.env ?? []) {
-    const value = process.env[name]
-    if (!value || Object.keys(headers).some((key) => key.toLowerCase() === "authorization")) continue
-    headers.Authorization = `Bearer ${value}`
-    break
-  }
   return headers
+}
+
+function configuredSecrets(provider: ProviderInfo, config: ProviderConfig): string[] {
+  const settings = { ...config.settings, ...obj(provider.settings) }
+  const secrets: string[] = []
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value.length > 0 && !secrets.includes(value)) secrets.push(value)
+  }
+  add(pick(settings, ["apiKey", "api_key", "token"]))
+  for (const name of config.env ?? provider.env ?? []) add(process.env[name])
+  return secrets
 }
 
 export interface DiscoverySource {
@@ -216,38 +219,51 @@ export interface DiscoverySource {
   endpoint: string
 }
 
-/** Fetch the endpoint's model inventory, trying common OpenAI-compatible paths. */
+/**
+ * Fetch the endpoint's model inventory. Every candidate credential is tried on
+ * each endpoint until one returns a usable list; the first successful credential
+ * wins and the remaining candidates are skipped.
+ */
 export async function fetchInventory(
   provider: ProviderInfo,
   config: ProviderConfig,
   options: AutodiscoveryOptions,
   debug = false,
+  credentials: readonly string[] = [],
 ): Promise<DiscoverySource> {
   const baseURL = options.baseURL
     ?? pick({ ...config.settings, ...obj(provider.settings) }, ["baseURL", "base_url", "url"])
   if (typeof baseURL !== "string" || baseURL.length === 0) throw new Error("provider has no baseURL")
-  const headers = authHeaders(provider, config, options)
+  const secrets: (string | undefined)[] = [...new Set<string | undefined>([...credentials, ...configuredSecrets(provider, config)])]
+  if (secrets.length === 0) secrets.push(undefined)
   const timeout = options.timeoutMs ?? 10_000
-  let lastError: unknown
+  const failures: string[] = []
+  let empty: DiscoverySource | undefined
+
   for (const endpoint of candidates(baseURL, options)) {
-    try {
-      const response = await fetch(endpoint, { headers, signal: AbortSignal.timeout(timeout) })
-      if (!response.ok) {
-        lastError = new Error(`${endpoint} returned ${response.status}`)
-        continue
+    for (const [index, secret] of secrets.entries()) {
+      try {
+        const response = await fetch(endpoint, {
+          headers: authHeaders(secret, provider, config, options),
+          signal: AbortSignal.timeout(timeout),
+        })
+        if (!response.ok) {
+          failures.push(`${new URL(endpoint).pathname}:${response.status}/credential-${index + 1}`)
+          continue
+        }
+        const models = parseInventory(await response.json())
+        if (debug) console.log(`[autodiscovery] ${provider.id}: ${models.length} models from ${endpoint} using credential ${index + 1}`)
+        if (models.length > 0) return { models, endpoint }
+        if (options.modelsPath || (options.extraPaths?.length ?? 0) > 0) return { models, endpoint }
+        empty ??= { models, endpoint }
+      } catch (error) {
+        failures.push(`${new URL(endpoint).pathname}:error/credential-${index + 1}`)
+        if (debug) console.warn(`[autodiscovery] ${provider.id}: ${endpoint} failed with credential ${index + 1}:`, error)
       }
-      const models = parseInventory(await response.json())
-      if (debug) console.log(`[autodiscovery] ${provider.id}: ${models.length} models from ${endpoint}`)
-      if (models.length > 0 || options.modelsPath || (options.extraPaths?.length ?? 0) > 0) {
-        return { models, endpoint }
-      }
-    } catch (error) {
-      lastError = error
-      if (debug) console.warn(`[autodiscovery] ${provider.id}: ${endpoint} failed:`, error)
     }
   }
-  if (lastError) throw lastError
-  return { models: [], endpoint: baseURL }
+  if (empty) return empty
+  throw new Error(`no model inventory from ${baseURL} (${failures.slice(-12).join(", ")})`)
 }
 
 function media(value: unknown, fallback: string[]): string[] {
