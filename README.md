@@ -4,14 +4,16 @@ An OpenCode **v2** server plugin that adds an optional `autodiscovery` option to
 
 ## Install
 
-OpenCode resolves bare plugin names from the npm registry. After publishing this package, add it to `plugins` in your global or project config:
+The default installation is directly from this GitHub repository. Add it to `plugins` in your global or project config:
 
 ```jsonc title="opencode.jsonc"
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-autodiscovery"],
+  "plugins": ["github:radqnico/opencode-custom-autodiscovery"],
 }
 ```
+
+OpenCode installs and caches the plugin automatically. The bare GitHub reference stays on the installed version; use `github:radqnico/opencode-custom-autodiscovery#main` to follow the branch, or pin a full commit hash for a reproducible install.
 
 For a checkout of this repository, or for a copy installed with `npm pack` / `npm install`, use a local path or `file://` URL instead. OpenCode does not resolve bare names from a project's `node_modules`:
 
@@ -34,7 +36,7 @@ OpenCode watches config files, so no restart is needed after editing.
 ```jsonc title="opencode.jsonc"
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-autodiscovery"],
+  "plugins": ["github:radqnico/opencode-custom-autodiscovery"],
   "providers": {
     "gateway": {
       "name": "My gateway",
