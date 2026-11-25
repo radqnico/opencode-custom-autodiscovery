@@ -1,5 +1,5 @@
 // TUI part: refresh autodiscovered models when the UI opens (and on demand via the palette command).
-import { Autodiscovery } from "./rpc.ts"
+import { refreshWithRetry } from "./refresh.ts"
 import { errorMessage, resultMessage } from "./toast.ts"
 
 export default {
@@ -7,8 +7,8 @@ export default {
   async setup(context) {
     const discover = async () => {
       try {
-        // Read context.client here: it changes when the server restarts.
-        const result = await context.client.rpc(Autodiscovery).refresh({})
+        // Read context.client on every attempt: it changes when the server restarts.
+        const result = await refreshWithRetry(() => context.client)
         const location = context.location ?? context.data.location.default()
         await context.data.location.model.invalidate(location)
         await context.data.location.model.sync(location)

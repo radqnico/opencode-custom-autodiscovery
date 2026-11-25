@@ -197,6 +197,28 @@ async function unitTests() {
   assert.equal(errorDetail(throwing), "[unreadable error]")
   assert.equal(describeFailure("provider testgw", { message: "offline" }), "provider testgw: offline")
 
+  const { refreshWithRetry, isRpcUnavailable } = await import("../src/refresh.ts")
+  assert.equal(isRpcUnavailable("RPC is unavailable: autodiscovery"), true)
+  assert.equal(isRpcUnavailable({ message: "rpc unavailable" }), true)
+  assert.equal(isRpcUnavailable(new Error("network offline")), false)
+  const retryResult = { providers: 1, models: 2, errors: 0, results: [{ providerID: "testgw", models: 2 }] }
+  let attempts = 0
+  const flaky = { rpc: () => ({ refresh: async () => {
+    attempts++
+    if (attempts < 3) throw { message: "RPC is unavailable: autodiscovery" }
+    return retryResult
+  } }) }
+  assert.deepEqual(await refreshWithRetry(() => flaky, { attempts: 5, delayMs: 1 }), retryResult)
+  assert.equal(attempts, 3, "startup RPC race is retried until the RPC registers")
+  attempts = 0
+  const broken = { rpc: () => ({ refresh: async () => { attempts++; throw new Error("network offline") } }) }
+  await assert.rejects(() => refreshWithRetry(() => broken, { attempts: 5, delayMs: 1 }), /network offline/)
+  assert.equal(attempts, 1, "non-transient errors are not retried")
+  attempts = 0
+  const never = { rpc: () => ({ refresh: async () => { attempts++; throw new Error("RPC is unavailable: autodiscovery") } }) }
+  await assert.rejects(() => refreshWithRetry(() => never, { attempts: 3, delayMs: 1 }), /RPC is unavailable/)
+  assert.equal(attempts, 3, "transient errors stop after the configured attempts")
+
   const tui = (await import("../src/tui.js")).default
   const events = []
   let layer

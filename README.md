@@ -108,6 +108,8 @@ The background server does **not** call the endpoint at startup: it only restore
 
 The `autodiscovery.tui` entry in the plugin list is this package's TUI part, which owns the palette command; it is not a second installation. Config changes reapply cached models with the new filters, but do not trigger a network fetch.
 
+A UI can open before the background server has registered the plugin's RPC. In that case the client retries briefly for the `RPC is unavailable` startup race instead of showing a failure toast; other errors are reported immediately.
+
 ## How discovery works
 
 1. `GET {baseURL}/models` is tried first (plus `/v1/models`, `/api/tags` and `/api/v1/models` fallbacks). Standard OpenAI-compatible responses (`data[]`), Ollama/LM Studio responses (`models[]`) and plain string arrays are accepted. Every available credential is tried in order — config `apiKey`, configured `env` variables, then all saved OpenCode credentials for that provider (active one first) — stopping at the first one that returns a model list. This also works when a provider is connected through `/connect` instead of declaring its key in the config.
