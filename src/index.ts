@@ -53,7 +53,7 @@ interface PluginContext {
   rpc?: {
     register(
       definition: typeof Autodiscovery,
-      handlers: { refresh(): Promise<DiscoveryResult> },
+      handlers: { refresh(input: { invalidate?: boolean }): Promise<DiscoveryResult> },
     ): Promise<{ dispose(): Promise<void> }>
   }
   event?: {
@@ -62,6 +62,7 @@ interface PluginContext {
   storage?: {
     get(key: string): Promise<unknown>
     set(key: string, value: unknown): Promise<void>
+    remove(key: string): Promise<void>
   }
 }
 
@@ -231,13 +232,8 @@ export default {
       }
     })
 
-    const reapply = async (): Promise<void> => {
-      await syncStates()
-      await ctx.provider.reload()
-    }
-
     let refreshing: Promise<DiscoveryResult> | undefined
-    const refresh = () => {
+    const refresh = (input: { invalidate?: boolean } = {}) => {
       if (refreshing) return refreshing
       refreshing = (async () => {
         let models = 0
@@ -245,6 +241,16 @@ export default {
         const results: ProviderResult[] = []
         try {
           await syncStates()
+          if (input.invalidate === true) {
+            for (const state of states.values()) {
+              try {
+                await ctx.storage?.remove(`autodiscovery:${state.providerID}`)
+              } catch {
+                // Cache removal is best effort.
+              }
+              state.models = []
+            }
+          }
         } catch (error) {
           const detail = errorDetail(error)
           console.warn(`[autodiscovery] config sync failed: ${detail}`)
@@ -304,11 +310,20 @@ export default {
       return refreshing
     }
 
+    /** Background discovery: a config edit refetches the endpoint live, not just the cached list. */
+    const discoverInBackground = (): Promise<void> =>
+      refresh().then(() => undefined).catch((error) => {
+        console.warn(describeFailure("[autodiscovery] background discovery failed", error))
+      })
+
     const cleanup: (() => void)[] = []
     if (ctx.rpc?.register) {
       const registration = await ctx.rpc.register(Autodiscovery, { refresh })
       cleanup.push(() => void registration.dispose())
     }
+
+    // Headless servers discover on their own; opening a UI is no longer required.
+    void discoverInBackground()
 
     const watchers: FSWatcher[] = []
     let watchDebounce: ReturnType<typeof setTimeout> | undefined
@@ -317,7 +332,7 @@ export default {
       try {
         watchers.push(watch(file, () => {
           if (watchDebounce) clearTimeout(watchDebounce)
-          watchDebounce = setTimeout(() => void reapply().catch((error) => console.warn(describeFailure("[autodiscovery] config reload failed", error))), 250)
+          watchDebounce = setTimeout(() => void discoverInBackground(), 250)
         }))
       } catch {
         // Not all platforms can watch individual files.
@@ -334,7 +349,7 @@ export default {
       void (async () => {
         try {
           for await (const event of eventContext.subscribe({ types: ["config.updated"], signal: controller.signal })) {
-            if (event.type === "config.updated") await reapply()
+            if (event.type === "config.updated") await discoverInBackground()
           }
         } catch (error) {
           if (!controller.signal.aborted) console.warn(describeFailure("[autodiscovery] event subscription failed", error))

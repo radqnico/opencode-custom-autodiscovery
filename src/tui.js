@@ -5,10 +5,10 @@ import { errorMessage, resultMessage } from "./toast.ts"
 export default {
   id: "autodiscovery.tui",
   async setup(context) {
-    const discover = async () => {
+    const discover = async ({ invalidate = false } = {}) => {
       try {
         // Read context.client on every attempt: it changes when the server restarts.
-        const result = await refreshWithRetry(() => context.client)
+        const result = await refreshWithRetry(() => context.client, { invalidate })
         const location = context.location ?? context.data.location.default()
         await context.data.location.model.invalidate(location)
         await context.data.location.model.sync(location)
@@ -37,6 +37,15 @@ export default {
           group: "Autodiscovery",
           palette: true,
           run: () => discover(),
+        },
+        {
+          id: "autodiscovery.ad",
+          title: "Discover models (fresh)",
+          description: "Clear the autodiscovery cache and refetch all models",
+          group: "Autodiscovery",
+          palette: true,
+          slash: { name: "ad" },
+          run: () => discover({ invalidate: true }),
         },
       ],
     }))

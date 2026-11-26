@@ -218,13 +218,18 @@ async function unitTests() {
   const never = { rpc: () => ({ refresh: async () => { attempts++; throw new Error("RPC is unavailable: autodiscovery") } }) }
   await assert.rejects(() => refreshWithRetry(() => never, { attempts: 3, delayMs: 1 }), /RPC is unavailable/)
   assert.equal(attempts, 3, "transient errors stop after the configured attempts")
+  let rpcInput
+  const withInput = { rpc: () => ({ refresh: async (input) => { rpcInput = input; return retryResult } }) }
+  await refreshWithRetry(() => withInput, { invalidate: true })
+  assert.deepEqual(rpcInput, { invalidate: true }, "invalidate flag reaches the RPC")
 
   const tui = (await import("../src/tui.js")).default
   const events = []
   let layer
   let refreshResult = { providers: 1, models: 7, errors: 0, results: [{ providerID: "testgw", models: 7 }] }
+  let tuiInput
   const tuiContext = {
-    client: { rpc: () => ({ refresh: async () => refreshResult }) },
+    client: { rpc: () => ({ refresh: async (input) => { tuiInput = input; return refreshResult } }) },
     data: {
       location: {
         default: () => ({ directory: "/tmp/test" }),
@@ -250,6 +255,13 @@ async function unitTests() {
   assert.equal(command.bind, undefined, "no default keybinding for the discover command")
   assert.equal(command.palette, true)
   await command.run()
+  assert.deepEqual(events, ["invalidate", "sync", success])
+
+  const slash = layer.commands.find((entry) => entry.id === "autodiscovery.ad")
+  assert.equal(slash.slash.name, "ad", "/ad is registered as a slash command")
+  events.length = 0
+  await slash.run()
+  assert.deepEqual(tuiInput, { invalidate: true }, "/ad invalidates the cache")
   assert.deepEqual(events, ["invalidate", "sync", success])
 
   refreshResult = { providers: 1, models: 3, errors: 1, results: [{ providerID: "testgw", models: 3, error: "offline" }] }
@@ -366,11 +378,11 @@ async function integrationTest() {
       return response.json()
     }
 
-    const rpc = async () => {
+    const rpc = async (input = {}) => {
       const response = await fetch(`${baseURL}/api/rpc/autodiscovery/refresh`, {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ input: {} }),
+        body: JSON.stringify({ input }),
       })
       if (!response.ok) throw new Error(`RPC refresh: ${response.status} ${await response.text().catch(() => "")}\nserver output:\n${output}`)
       return response.json()
@@ -383,10 +395,12 @@ async function integrationTest() {
     }
     const active = await api("/api/plugin")
     assert.ok(active.data.some((plugin) => plugin.id === "autodiscovery" && plugin.state.status === "active"), `plugin did not load:\n${output}`)
-    assert.equal(authRequests, 0, "server startup must not call the endpoint")
+    for (let attempt = 0; attempt < 150 && authRequests === 0; attempt++) await delay(200)
+    assert.ok(authRequests > 0, `startup must discover in the background:\n${output}`)
+    console.log(`integration check 0 passed: ${authRequests} startup discovery request(s)`)
+    const beforeRpc = authRequests
     await rpc()
-    assert.ok(authRequests > 0, "RPC refresh must call the endpoint")
-    console.log(`integration check 0 passed: no startup fetch, ${authRequests} request(s) after RPC`)
+    assert.ok(authRequests > beforeRpc, "RPC refresh must call the endpoint")
 
     const waitForModels = async (ids) => {
       for (let attempt = 0; attempt < 150; attempt++) {
@@ -412,9 +426,10 @@ async function integrationTest() {
     assert.deepEqual(command.variants.map((variant) => variant.id), ["fast"])
     console.log("integration check 1 passed: filtered discovery with endpoint metadata")
 
+    const beforeConfig = authRequests
     writeConfig(["claude*"])
-    await delay(1200)
-    await rpc()
+    for (let attempt = 0; attempt < 150 && authRequests === beforeConfig; attempt++) await delay(200)
+    assert.ok(authRequests > beforeConfig, `config change must trigger a live background refresh:\n${output}`)
     const second = await waitForModels(["claude-sonnet-5-5", "manual-keep"])
     const inherited = second.find((model) => model.id === "claude-sonnet-5-5")
     assert.equal(inherited.name, "Claude Sonnet 5.5")
@@ -422,6 +437,12 @@ async function integrationTest() {
     assert.ok(inherited.variants.some((variant) => variant.id === "high"))
     assert.equal(inherited.cost.length, 1)
     console.log("integration check 2 passed: config reload applies new filters and catalog enrichment")
+
+    const beforeAd = authRequests
+    await rpc({ invalidate: true })
+    assert.ok(authRequests > beforeAd, "/ad invalidate refresh must call the endpoint")
+    await waitForModels(["claude-sonnet-5-5", "manual-keep"])
+    console.log("integration check 3 passed: invalidate refresh rediscovers models")
   } finally {
     server.kill("SIGTERM")
     await new Promise((resolve) => mock.close(resolve))

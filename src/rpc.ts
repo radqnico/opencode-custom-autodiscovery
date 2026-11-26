@@ -5,7 +5,9 @@ export const Autodiscovery = {
     refresh: {
       input: {
         type: "object",
-        properties: {},
+        properties: {
+          invalidate: { type: "boolean" },
+        },
         additionalProperties: false,
       },
       output: {

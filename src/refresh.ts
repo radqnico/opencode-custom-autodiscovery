@@ -11,7 +11,7 @@ import type { DiscoveryResult } from "./toast.ts"
 const UNAVAILABLE = /\brpc\b[\s\S]{0,80}\b(?:unavailable|not registered|not found)\b|\b(?:unavailable|not registered)\b[\s\S]{0,80}\brpc\b/i
 
 export interface RpcClient {
-  rpc(definition: typeof Autodiscovery): { refresh(input: object): Promise<DiscoveryResult> }
+  rpc(definition: typeof Autodiscovery): { refresh(input: { invalidate?: boolean }): Promise<DiscoveryResult> }
 }
 
 /** True only for the "RPC is unavailable: autodiscovery" class of startup errors. */
@@ -22,6 +22,7 @@ export function isRpcUnavailable(error: unknown): boolean {
 export interface RetryOptions {
   attempts?: number
   delayMs?: number
+  invalidate?: boolean
 }
 
 /**
@@ -30,12 +31,12 @@ export interface RetryOptions {
  */
 export async function refreshWithRetry(
   client: () => RpcClient,
-  { attempts = 24, delayMs = 250 }: RetryOptions = {},
+  { attempts = 24, delayMs = 250, invalidate = false }: RetryOptions = {},
 ): Promise<DiscoveryResult> {
   let last: unknown
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await client().rpc(Autodiscovery).refresh({})
+      return await client().rpc(Autodiscovery).refresh(invalidate ? { invalidate: true } : {})
     } catch (error) {
       last = error
       if (!isRpcUnavailable(error) || attempt === attempts) throw error

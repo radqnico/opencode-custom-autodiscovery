@@ -29,7 +29,7 @@ For a checkout of this repository, or for a copy installed with `npm pack` / `np
 }
 ```
 
-OpenCode watches config files, so no restart is needed after editing.
+OpenCode watches config files, so no restart is needed after editing — every config change triggers a live background refresh.
 
 ## Configure a provider
 
@@ -100,13 +100,13 @@ Plugin options are also accepted as an override:
 
 ## When discovery runs
 
-The background server does **not** call the endpoint at startup: it only restores the last cached inventory.
+The background server discovers on its own: no UI needs to open.
 
-- **TUI**: opening the UI calls the server RPC, re-syncs the model list and shows a toast with the result (model count and any provider failures). Run **Discover models** from the command palette to refresh again; the same toast confirms the result. The command id `autodiscovery.discover` has no default keybinding and can be bound in your keybinds if you want one.
-- **Desktop GUI**: a window calls the same RPC when it opens and shows a toast with the result.
-- **API**: `POST /api/rpc/autodiscovery/refresh` with body `{"input":{}}`.
+- **Startup**: the cached inventory is restored immediately, then a background refresh fetches the live endpoint.
+- **Config changes**: editing any watched config file or receiving a `config.updated` event triggers a live background refresh (250 ms debounce for file changes). New filters, endpoints and credentials take effect in the running server without a restart.
+- **On demand**: type `/ad` in the TUI prompt to clear the cached inventory and refetch every provider live (the **Discover models (fresh)** palette command does the same). TUI opening, the plain **Discover models** command, Desktop GUI opening, and `POST /api/rpc/autodiscovery/refresh` with body `{"input":{}}` refresh without invalidation. Send `{"input":{"invalidate":true}}` to the RPC for the same fresh-discovery behavior as `/ad`.
 
-The `autodiscovery.tui` entry in the plugin list is this package's TUI part, which owns the palette command; it is not a second installation. Config changes reapply cached models with the new filters, but do not trigger a network fetch.
+The `autodiscovery.tui` entry in the plugin list is this package's TUI part, which owns the palette command; it is not a second installation.
 
 A UI can open before the background server has registered the plugin's RPC. In that case the client retries briefly for the `RPC is unavailable` startup race instead of showing a failure toast; other errors are reported immediately.
 
@@ -116,7 +116,7 @@ A UI can open before the background server has registered the plugin's RPC. In t
 2. Each model ID is matched against OpenCode's built-in catalog by full ID and by its trailing segment, so gateway-prefixed IDs such as `cmd/claude-sonnet-5-5` inherit the catalog's limit, capabilities, cost and variants.
 3. Endpoint metadata (`context_length`, `max_model_len`, `tool_call`, `modalities`, `reasoning_options`, `variants`, etc.) overrides catalog values where present. The plugin detects the provider's variant format automatically: inventories that declare `variants` / `reasoning_options` keep those variants, while IDs such as `model-high` are folded into variants of `model` only when both are present. Aliases with the same catalog name get a distinguishing segment in the display name instead of being hidden.
 4. Models declared explicitly in the provider's `models` map take precedence over both.
-5. The resulting inventory is registered with a provider transform. Providers with no usable models are added with `activation: "enabled"` so discovered models become selectable immediately. The last successful inventory is cached and restored until the next UI-driven refresh.
+5. The resulting inventory is registered with a provider transform. Providers with no usable models are added with `activation: "enabled"` so discovered models become selectable immediately. The last successful inventory is cached and restored until the next background or UI-driven refresh.
 
 Filters apply only to autodiscovered models: models listed explicitly in the provider's `models` map are always kept, so hand-written entries never disappear because of a glob.
 
