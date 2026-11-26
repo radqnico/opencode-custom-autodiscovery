@@ -181,197 +181,205 @@ export default {
       catalog = buildCatalogIndex(records)
     })
 
-    const states = new Map<string, State>()
-    const syncStates = async () => {
-      for (const [providerID, entry] of loadProviderOptions(ctx)) {
-        if (entry.options.enabled !== true) {
-          states.delete(providerID)
-          continue
-        }
-        const existing = states.get(providerID)
-        const info = records.find((record) => record.provider.id === providerID)?.provider
-          ?? existing?.info
-          ?? buildProviderInfo(providerID, entry.config, entry.options)
-        if (existing) {
-          existing.options = entry.options
-          existing.config = entry.config
-          existing.info = info
-        } else {
-          states.set(providerID, {
-            providerID,
-            options: entry.options,
-            config: entry.config,
-            info,
-            models: (await cachedModels(ctx, providerID)) ?? [],
-          })
-        }
-      }
-    }
-    await syncStates()
-
-    await ctx.provider.transform((editor) => {
-      for (const state of states.values()) {
-        const filters = state.options.filters
-        const discovered = state.models.filter((model) => matchesFilters(model.id, filters))
-        const discoveredIDs = new Set(state.models.map((model) => model.id))
-        const existing = editor.get(state.providerID)
-        const manual = (existing ? [...existing.models.values()] : [])
-          .filter((model) => !discoveredIDs.has(model.id))
-
-        if (!existing) {
-          editor.add({
-            info: buildProviderInfo(state.providerID, state.config, state.options, state.info),
-            models: [...manual, ...discovered],
-          })
-          continue
-        }
-
-        editor.models.set(state.providerID, [...manual, ...discovered])
-        if (state.options.baseURL) {
-          editor.update(state.providerID, (provider) => {
-            provider.settings = { ...(provider.settings as Record<string, unknown> | undefined), baseURL: state.options.baseURL }
-          })
+    // Defer all remaining setup (state sync, provider registration, RPC
+    // registration, background discovery, file watchers) so OpenCode's own
+    // startup is not blocked while the plugin loads.
+    Promise.resolve().then(async () => {
+      const states = new Map<string, State>()
+      const syncStates = async () => {
+        for (const [providerID, entry] of loadProviderOptions(ctx)) {
+          if (entry.options.enabled !== true) {
+            states.delete(providerID)
+            continue
+          }
+          const existing = states.get(providerID)
+          const info = records.find((record) => record.provider.id === providerID)?.provider
+            ?? existing?.info
+            ?? buildProviderInfo(providerID, entry.config, entry.options)
+          if (existing) {
+            existing.options = entry.options
+            existing.config = entry.config
+            existing.info = info
+          } else {
+            states.set(providerID, {
+              providerID,
+              options: entry.options,
+              config: entry.config,
+              info,
+              models: (await cachedModels(ctx, providerID)) ?? [],
+            })
+          }
         }
       }
-    })
+      await syncStates()
 
-    let refreshing: Promise<DiscoveryResult> | undefined
-    const refresh = (input: { invalidate?: boolean } = {}) => {
-      if (refreshing) return refreshing
-      refreshing = (async () => {
-        let models = 0
-        let errors = 0
-        const results: ProviderResult[] = []
-        try {
-          await syncStates()
-          if (input.invalidate === true) {
-            for (const state of states.values()) {
-              try {
-                await ctx.storage?.remove(`autodiscovery:${state.providerID}`)
-              } catch {
-                // Cache removal is best effort.
+      await ctx.provider.transform((editor) => {
+        for (const state of states.values()) {
+          const filters = state.options.filters
+          const discovered = state.models.filter((model) => matchesFilters(model.id, filters))
+          const discoveredIDs = new Set(state.models.map((model) => model.id))
+          const existing = editor.get(state.providerID)
+          const manual = (existing ? [...existing.models.values()] : [])
+            .filter((model) => !discoveredIDs.has(model.id))
+
+          if (!existing) {
+            editor.add({
+              info: buildProviderInfo(state.providerID, state.config, state.options, state.info),
+              models: [...manual, ...discovered],
+            })
+            continue
+          }
+
+          editor.models.set(state.providerID, [...manual, ...discovered])
+          if (state.options.baseURL) {
+            editor.update(state.providerID, (provider) => {
+              provider.settings = { ...(provider.settings as Record<string, unknown> | undefined), baseURL: state.options.baseURL }
+            })
+          }
+        }
+      })
+
+      let refreshing: Promise<DiscoveryResult> | undefined
+      const refresh = (input: { invalidate?: boolean } = {}) => {
+        if (refreshing) return refreshing
+        refreshing = (async () => {
+          let models = 0
+          let errors = 0
+          const results: ProviderResult[] = []
+          try {
+            await syncStates()
+            if (input.invalidate === true) {
+              for (const state of states.values()) {
+                try {
+                  await ctx.storage?.remove(`autodiscovery:${state.providerID}`)
+                } catch {
+                  // Cache removal is best effort.
+                }
+                state.models = []
               }
-              state.models = []
+            }
+          } catch (error) {
+            const detail = errorDetail(error)
+            console.warn(`[autodiscovery] config sync failed: ${detail}`)
+            return {
+              providers: states.size,
+              models,
+              errors: 1,
+              results: [{ providerID: "autodiscovery", models: 0, error: `config sync failed: ${detail}` }],
             }
           }
-        } catch (error) {
-          const detail = errorDetail(error)
-          console.warn(`[autodiscovery] config sync failed: ${detail}`)
-          return {
-            providers: states.size,
-            models,
-            errors: 1,
-            results: [{ providerID: "autodiscovery", models: 0, error: `config sync failed: ${detail}` }],
+          for (const state of states.values()) {
+            const debug = state.options.debug === true
+            try {
+              const provider = state.info ?? buildProviderInfo(state.providerID, state.config, state.options)
+              const credentials = await credentialCandidates(ctx, state)
+              log(debug, `${state.providerID}: trying ${credentials.length} credential(s)`)
+              const inventory = await fetchInventory(provider, state.config, state.options, debug, credentials)
+              const previous = new Map(state.models.map((model) => [model.id, model]))
+              const activeCatalog: CatalogIndex = state.options.catalog === false
+                ? { byID: new Map(), byTail: new Map() }
+                : catalog
+              state.models = inventory.models.map((entry) => buildModelInfo(
+                entry,
+                state.providerID,
+                activeCatalog,
+                state.config.models?.[entry.id],
+                previous.get(entry.id),
+              ))
+              disambiguateNames(state.models)
+              state.endpoint = inventory.endpoint
+              state.error = undefined
+              models += state.models.length
+              results.push({ providerID: state.providerID, models: state.models.length })
+              await saveModels(ctx, state.providerID, state.models)
+              log(debug, `${state.providerID}: discovered ${state.models.length} model(s) from ${inventory.endpoint}`)
+            } catch (error) {
+              errors++
+              state.error = errorDetail(error)
+              results.push({ providerID: state.providerID, models: state.models.length, error: state.error })
+              console.warn(`[autodiscovery] ${state.providerID}: discovery failed: ${state.error}`)
+            }
           }
-        }
-        for (const state of states.values()) {
-          const debug = state.options.debug === true
+          // Keep the RPC resolved even if OpenCode's own reload throws a plain
+          // object: a rejected RPC reaches the UI as "[object Object]".
           try {
-            const provider = state.info ?? buildProviderInfo(state.providerID, state.config, state.options)
-            const credentials = await credentialCandidates(ctx, state)
-            log(debug, `${state.providerID}: trying ${credentials.length} credential(s)`)
-            const inventory = await fetchInventory(provider, state.config, state.options, debug, credentials)
-            const previous = new Map(state.models.map((model) => [model.id, model]))
-            const activeCatalog: CatalogIndex = state.options.catalog === false
-              ? { byID: new Map(), byTail: new Map() }
-              : catalog
-            state.models = inventory.models.map((entry) => buildModelInfo(
-              entry,
-              state.providerID,
-              activeCatalog,
-              state.config.models?.[entry.id],
-              previous.get(entry.id),
-            ))
-            disambiguateNames(state.models)
-            state.endpoint = inventory.endpoint
-            state.error = undefined
-            models += state.models.length
-            results.push({ providerID: state.providerID, models: state.models.length })
-            await saveModels(ctx, state.providerID, state.models)
-            log(debug, `${state.providerID}: discovered ${state.models.length} model(s) from ${inventory.endpoint}`)
+            await ctx.provider.reload()
           } catch (error) {
+            const detail = errorDetail(error)
             errors++
-            state.error = errorDetail(error)
-            results.push({ providerID: state.providerID, models: state.models.length, error: state.error })
-            console.warn(`[autodiscovery] ${state.providerID}: discovery failed: ${state.error}`)
+            results.push({ providerID: "autodiscovery", models: 0, error: `reload failed: ${detail}` })
+            console.warn(`[autodiscovery] reload failed: ${detail}`)
           }
-        }
-        // Keep the RPC resolved even if OpenCode's own reload throws a plain
-        // object: a rejected RPC reaches the UI as "[object Object]".
+          return { providers: states.size, models, errors, results }
+        })().finally(() => {
+          refreshing = undefined
+        })
+        return refreshing
+      }
+
+      let discoveryEvents: { emit(name: "discovered", data: DiscoveryResult): Promise<void> } | undefined
+
+      /** Background discovery: a config edit refetches the endpoint live, not just the cached list. */
+      const discoverInBackground = async (): Promise<void> => {
         try {
-          await ctx.provider.reload()
+          const result = await refresh()
+          try {
+            await discoveryEvents?.emit("discovered", result)
+          } catch (error) {
+            console.warn(describeFailure("[autodiscovery] discovery event failed", error))
+          }
         } catch (error) {
-          const detail = errorDetail(error)
-          errors++
-          results.push({ providerID: "autodiscovery", models: 0, error: `reload failed: ${detail}` })
-          console.warn(`[autodiscovery] reload failed: ${detail}`)
+          console.warn(describeFailure("[autodiscovery] background discovery failed", error))
         }
-        return { providers: states.size, models, errors, results }
-      })().finally(() => {
-        refreshing = undefined
+      }
+
+      const cleanup: (() => void)[] = []
+      if (ctx.rpc?.register) {
+        const registration = await ctx.rpc.register(Autodiscovery, { refresh })
+        discoveryEvents = registration.events
+        cleanup.push(() => void registration.dispose())
+      }
+
+      // Headless servers discover on their own; opening a UI is no longer required.
+      void discoverInBackground()
+
+      const watchers: FSWatcher[] = []
+      let watchDebounce: ReturnType<typeof setTimeout> | undefined
+      for (const file of configFilePaths(ctx)) {
+        if (!existsSync(file)) continue
+        try {
+          watchers.push(watch(file, () => {
+            if (watchDebounce) clearTimeout(watchDebounce)
+            watchDebounce = setTimeout(() => void discoverInBackground(), 250)
+          }))
+        } catch {
+          // Not all platforms can watch individual files.
+        }
+      }
+      cleanup.push(() => {
+        if (watchDebounce) clearTimeout(watchDebounce)
+        watchers.forEach((watcher) => watcher.close())
       })
-      return refreshing
-    }
 
-    let discoveryEvents: { emit(name: "discovered", data: DiscoveryResult): Promise<void> } | undefined
-
-    /** Background discovery: a config edit refetches the endpoint live, not just the cached list. */
-    const discoverInBackground = async (): Promise<void> => {
-      try {
-        const result = await refresh()
-        try {
-          await discoveryEvents?.emit("discovered", result)
-        } catch (error) {
-          console.warn(describeFailure("[autodiscovery] discovery event failed", error))
-        }
-      } catch (error) {
-        console.warn(describeFailure("[autodiscovery] background discovery failed", error))
+      const eventContext = ctx.event
+      if (eventContext?.subscribe) {
+        const controller = new AbortController()
+        void (async () => {
+          try {
+            for await (const event of eventContext.subscribe({ types: ["config.updated"], signal: controller.signal })) {
+              if (event.type === "config.updated") await discoverInBackground()
+            }
+          } catch (error) {
+            if (!controller.signal.aborted) console.warn(describeFailure("[autodiscovery] event subscription failed", error))
+          }
+        })()
+        cleanup.push(() => controller.abort())
       }
-    }
 
-    const cleanup: (() => void)[] = []
-    if (ctx.rpc?.register) {
-      const registration = await ctx.rpc.register(Autodiscovery, { refresh })
-      discoveryEvents = registration.events
-      cleanup.push(() => void registration.dispose())
-    }
-
-    // Headless servers discover on their own; opening a UI is no longer required.
-    void discoverInBackground()
-
-    const watchers: FSWatcher[] = []
-    let watchDebounce: ReturnType<typeof setTimeout> | undefined
-    for (const file of configFilePaths(ctx)) {
-      if (!existsSync(file)) continue
-      try {
-        watchers.push(watch(file, () => {
-          if (watchDebounce) clearTimeout(watchDebounce)
-          watchDebounce = setTimeout(() => void discoverInBackground(), 250)
-        }))
-      } catch {
-        // Not all platforms can watch individual files.
-      }
-    }
-    cleanup.push(() => {
-      if (watchDebounce) clearTimeout(watchDebounce)
-      watchers.forEach((watcher) => watcher.close())
+      return () => cleanup.forEach((dispose) => dispose())
     })
 
-    const eventContext = ctx.event
-    if (eventContext?.subscribe) {
-      const controller = new AbortController()
-      void (async () => {
-        try {
-          for await (const event of eventContext.subscribe({ types: ["config.updated"], signal: controller.signal })) {
-            if (event.type === "config.updated") await discoverInBackground()
-          }
-        } catch (error) {
-          if (!controller.signal.aborted) console.warn(describeFailure("[autodiscovery] event subscription failed", error))
-        }
-      })()
-      cleanup.push(() => controller.abort())
-    }
-
-    return () => cleanup.forEach((dispose) => dispose())
+    // Return immediately so OpenCode startup is not blocked by plugin setup.
+    return () => {}
   },
 }
