@@ -228,8 +228,12 @@ async function unitTests() {
   let layer
   let refreshResult = { providers: 1, models: 7, errors: 0, results: [{ providerID: "testgw", models: 7 }] }
   let tuiInput
+  let tuiEvent
   const tuiContext = {
-    client: { rpc: () => ({ refresh: async (input) => { tuiInput = input; return refreshResult } }) },
+    client: { rpc: () => ({
+      refresh: async (input) => { tuiInput = input; return refreshResult },
+      events: { on: (name, handler, options) => { tuiEvent = { name, handler, options }; return () => {} } },
+    }) },
     data: {
       location: {
         default: () => ({ directory: "/tmp/test" }),
@@ -250,6 +254,14 @@ async function unitTests() {
   await tui.setup(tuiContext)
   assert.deepEqual(events, ["invalidate", "sync", success], "TUI open refreshes and toasts the result")
   assert.equal(layer.mode, "global")
+  assert.equal(tuiEvent.name, "discovered", "TUI subscribes to background discovery results")
+  events.length = 0
+  tuiEvent.handler({ data: { providers: 1, models: 0, errors: 1, results: [{ providerID: "local", models: 0, error: "offline" }] } })
+  assert.deepEqual(events, [{
+    title: "Autodiscovery",
+    message: "local: 0 models loaded (offline)",
+    variant: "warning",
+  }], "background discovery errors surface as a toast")
   events.length = 0
   const command = layer.commands.find((entry) => entry.id === "autodiscovery.discover")
   assert.equal(command.bind, undefined, "no default keybinding for the discover command")
@@ -276,8 +288,12 @@ async function unitTests() {
   const gui = (await import("../src/gui.js")).default
   const guiEvents = []
   let guiRefresh = async () => ({ providers: 1, models: 5, errors: 0, results: [{ providerID: "testgw", models: 5 }] })
+  let guiEvent
   const guiContext = {
-    client: { rpc: () => ({ refresh: (...args) => guiRefresh(...args) }) },
+    client: { rpc: () => ({
+      refresh: (...args) => guiRefresh(...args),
+      events: { on: (name, handler, options) => { guiEvent = { name, handler, options }; return () => {} } },
+    }) },
     toast: { show: (toast) => guiEvents.push(toast) },
   }
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -288,6 +304,14 @@ async function unitTests() {
     description: "testgw: 5 models loaded",
     variant: "success",
   }], "GUI open refreshes and toasts the result")
+  assert.equal(guiEvent.name, "discovered", "GUI subscribes to background discovery results")
+  guiEvents.length = 0
+  guiEvent.handler({ data: { providers: 1, models: 0, errors: 1, results: [{ providerID: "local", models: 0, error: "offline" }] } })
+  assert.deepEqual(guiEvents, [{
+    title: "Autodiscovery",
+    description: "local: 0 models loaded (offline)",
+    variant: "error",
+  }], "background discovery errors surface in the GUI")
 
   guiEvents.length = 0
   guiRefresh = async () => { throw new Error("server down") }

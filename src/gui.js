@@ -1,5 +1,6 @@
 // GUI part: discover models and show the result when an OpenCode Desktop window opens.
 import { refreshWithRetry } from "./refresh.ts"
+import { Autodiscovery } from "./rpc.ts"
 import { errorMessage, resultMessage } from "./toast.ts"
 
 export default {
@@ -17,5 +18,14 @@ export default {
         variant: "error",
       }),
     )
+    const controller = new AbortController()
+    const off = ctx.client.rpc(Autodiscovery).events.on("discovered", ({ data }) => {
+      ctx.toast.show({
+        title: "Autodiscovery",
+        description: resultMessage(data),
+        variant: data.errors > 0 ? "error" : "success",
+      })
+    }, { signal: controller.signal })
+    return () => { controller.abort(); off() }
   },
 }

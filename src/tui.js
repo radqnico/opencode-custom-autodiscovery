@@ -1,5 +1,6 @@
 // TUI part: refresh autodiscovered models when the UI opens (and on demand via the palette command).
 import { refreshWithRetry } from "./refresh.ts"
+import { Autodiscovery } from "./rpc.ts"
 import { errorMessage, resultMessage } from "./toast.ts"
 
 export default {
@@ -50,6 +51,16 @@ export default {
       ],
     }))
 
+    const controller = new AbortController()
+    const off = context.client.rpc(Autodiscovery).events.on("discovered", ({ data }) => {
+      context.ui.toast.show({
+        title: "Autodiscovery",
+        message: resultMessage(data),
+        variant: data.errors > 0 ? "warning" : "success",
+      })
+    }, { signal: controller.signal })
+
     await discover()
+    return () => { controller.abort(); off() }
   },
 }

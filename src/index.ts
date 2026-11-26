@@ -54,7 +54,10 @@ interface PluginContext {
     register(
       definition: typeof Autodiscovery,
       handlers: { refresh(input: { invalidate?: boolean }): Promise<DiscoveryResult> },
-    ): Promise<{ dispose(): Promise<void> }>
+    ): Promise<{
+      dispose(): Promise<void>
+      events: { emit(name: "discovered", data: DiscoveryResult): Promise<void> }
+    }>
   }
   event?: {
     subscribe(options?: { types?: string[]; signal?: AbortSignal }): AsyncIterable<{ type: string }>
@@ -310,15 +313,26 @@ export default {
       return refreshing
     }
 
+    let discoveryEvents: { emit(name: "discovered", data: DiscoveryResult): Promise<void> } | undefined
+
     /** Background discovery: a config edit refetches the endpoint live, not just the cached list. */
-    const discoverInBackground = (): Promise<void> =>
-      refresh().then(() => undefined).catch((error) => {
+    const discoverInBackground = async (): Promise<void> => {
+      try {
+        const result = await refresh()
+        try {
+          await discoveryEvents?.emit("discovered", result)
+        } catch (error) {
+          console.warn(describeFailure("[autodiscovery] discovery event failed", error))
+        }
+      } catch (error) {
         console.warn(describeFailure("[autodiscovery] background discovery failed", error))
-      })
+      }
+    }
 
     const cleanup: (() => void)[] = []
     if (ctx.rpc?.register) {
       const registration = await ctx.rpc.register(Autodiscovery, { refresh })
+      discoveryEvents = registration.events
       cleanup.push(() => void registration.dispose())
     }
 

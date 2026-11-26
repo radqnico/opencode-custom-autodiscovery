@@ -103,7 +103,7 @@ Plugin options are also accepted as an override:
 The background server discovers on its own: no UI needs to open.
 
 - **Startup**: the cached inventory is restored immediately, then a background refresh fetches the live endpoint.
-- **Config changes**: editing any watched config file or receiving a `config.updated` event triggers a live background refresh (250 ms debounce for file changes). New filters, endpoints and credentials take effect in the running server without a restart.
+- **Config changes**: editing any watched config file or receiving a `config.updated` event triggers a live background refresh (250 ms debounce for file changes). New filters, endpoints and credentials take effect in the running server without a restart. The result is emitted as a `discovered` RPC event; an open TUI or Desktop GUI shows a toast, including a warning/error when a provider fails.
 - **On demand**: type `/ad` in the TUI prompt to clear the cached inventory and refetch every provider live (the **Discover models (fresh)** palette command does the same). TUI opening, the plain **Discover models** command, Desktop GUI opening, and `POST /api/rpc/autodiscovery/refresh` with body `{"input":{}}` refresh without invalidation. Send `{"input":{"invalidate":true}}` to the RPC for the same fresh-discovery behavior as `/ad`.
 
 The `autodiscovery.tui` entry in the plugin list is this package's TUI part, which owns the palette command; it is not a second installation.
